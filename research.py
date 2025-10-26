@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
+
+from planning import QueryPlan, QueryPlanner
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +211,13 @@ class ResearchPipeline:
         page_fetcher: PageFetcher,
         max_search_results: int = 5,
         max_documents: int = 3,
+        planner: Optional[QueryPlanner] = None,
     ):
         self.search_client = search_client
         self.page_fetcher = page_fetcher
         self.max_search_results = max(1, max_search_results)
         self.max_documents = max(1, max_documents)
+        self.planner = planner
 
     def build_queries(self, company: str, address: str) -> List[str]:
         parts = [f'"{company}" "{address}"'.strip()]
@@ -233,15 +237,43 @@ class ResearchPipeline:
         logger.debug("Queries for company=%s address=%s -> %s", company, address, deduped)
         return deduped
 
-    def collect_evidence(self, company: str, address: str) -> List[EvidenceDocument]:
+    def collect_evidence(
+        self, company: str, address: str
+    ) -> Tuple[List[EvidenceDocument], QueryPlan]:
         if not company and not address:
             logger.debug("No company/address supplied for research; skipping.")
-            return []
+            empty_plan = QueryPlan(
+                queries=[], rationale="Missing company and address", used_model=False
+            )
+            return [], empty_plan
 
         documents: List[EvidenceDocument] = []
         seen_urls: set[str] = set()
 
-        for query in self.build_queries(company, address):
+        base_queries = self.build_queries(company, address)
+        if self.planner:
+            plan = self.planner.plan_queries(
+                company=company,
+                address=address,
+                default_queries=base_queries,
+            )
+            queries = plan.queries or base_queries
+        else:
+            plan = QueryPlan(
+                queries=base_queries,
+                rationale="Heuristic query builder",
+                used_model=False,
+            )
+            queries = base_queries
+
+        logger.debug(
+            "Query plan for %s | %s -> %s",
+            company,
+            address,
+            queries,
+        )
+
+        for query in queries:
             try:
                 results = self.search_client.search(
                     query=query, max_results=self.max_search_results
@@ -275,12 +307,11 @@ class ResearchPipeline:
                         "Reached max_documents=%d; stopping evidence collection.",
                         self.max_documents,
                     )
-                    return documents
-
+                    return documents, plan
         logger.debug(
             "Collected %d evidence document(s) for company=%s address=%s",
             len(documents),
             company,
             address,
         )
-        return documents
+        return documents, plan

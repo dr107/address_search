@@ -88,6 +88,13 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         default=6,
         help="Maximum tool-call iterations when agentic mode is enabled (default: 6).",
     )
+    parser.add_argument(
+        "--ignore-cache",
+        action="store_true",
+        help=(
+            "If set, recompute every row even when the output CSV already contains prior results."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -128,6 +135,7 @@ def main(argv: List[str]) -> None:
         agentic_mode=args.agentic_mode,
         agentic_model_hints=agentic_model_hints,
         agent_max_iterations=args.agent_max_iterations,
+        ignore_cache=args.ignore_cache,
     )
 
     print(f"Done. Wrote {output_path}")

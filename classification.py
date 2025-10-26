@@ -6,6 +6,7 @@ from agentic import AgenticConfig, ToolAgent, ToolAgentError
 from constants import ADDRESS_COLUMN, COMPANY_COLUMN
 from ollama import OllamaClient
 from research import EvidenceDocument
+from requests import HTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ def build_prompt(
     company_name: str,
     address: str,
     evidence: Optional[List[EvidenceDocument]],
+    summary: Optional[str] = None,
 ) -> str:
     """
     Placeholder prompt enriched with gathered evidence.
@@ -37,11 +39,14 @@ def build_prompt(
     display_company = company_name or "Unknown company"
     display_address = address or "Unknown address"
     evidence_text = _format_evidence(evidence)
+    summary_text = summary.strip() if summary else "No summarized evidence was available."
     return (
         "You are a helper for facility classification.\n"
-        "Using the evidence below, determine what kind of site this is.\n"
+        "Using the research summary and evidence below, determine what kind of site this is.\n"
         f"Company: {display_company}\n"
         f"Address: {display_address}\n\n"
+        "Research summary:\n"
+        f"{summary_text}\n\n"
         "Evidence:\n"
         f"{evidence_text}\n\n"
         "Return ONLY strict JSON with these keys:\n"
@@ -60,6 +65,7 @@ def run_model_on_address(
     client: OllamaClient,
     model_name: str,
     evidence: Optional[List[EvidenceDocument]] = None,
+    evidence_summary: Optional[str] = None,
     agent_config: Optional[AgenticConfig] = None,
 ) -> Dict[str, Any]:
     """
@@ -125,16 +131,33 @@ def run_model_on_address(
         company_name=company_name,
         address=address,
         evidence=evidence,
+        summary=evidence_summary,
     )
 
-    raw_output = client.generate(
-        model=model_name,
-        prompt=prompt,
-        options={
-            "temperature": 0.1,
-            "num_ctx": 4096,
-        },
-    )
+    base_options = {
+        "temperature": 0.1,
+        "num_ctx": 4096,
+    }
+    json_options = {**base_options, "format": "json"}
+
+    try:
+        raw_output = client.generate(
+            model=model_name,
+            prompt=prompt,
+            options=json_options,
+        )
+    except HTTPError as exc:
+        logger.warning(
+            "JSON-enforced generation failed for %s (%s); retrying without format constraint: %s",
+            company_name,
+            address,
+            exc,
+        )
+        raw_output = client.generate(
+            model=model_name,
+            prompt=prompt,
+            options=base_options,
+        )
     logger.debug("Received raw model output for %s: %s", address, raw_output)
 
     context = f"{company_name} | {address}"

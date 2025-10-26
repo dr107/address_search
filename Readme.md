@@ -9,15 +9,16 @@ High-Level Flow
 
 1. `main.py` handles CLI parsing (input/output paths, Ollama model/URL, logging level, row limits) and wires configuration to the processing pipeline.  
 2. `csvparse.process_file`  
-   - loads the CSV (`Full Address` + `Company Name` columns expected),  
+   - loads the CSV (`Full Address` + `Company Name` columns expected) and optionally hydrates an **output-cache** from the previous run (skipped via `--ignore-cache`),  
    - determines whether to engage web research and/or the agentic tool loop,  
-   - iterates rows, calling `classification.run_model_on_address`,  
-   - writes the enriched CSV (adds `site_type`, `confidence`, `notes`, `raw_model_output`).  
+   - orchestrates the **planning ➞ research ➞ summarization ➞ classification** pipeline for each uncached row,  
+   - writes the enriched CSV (adds `site_type`, `confidence`, `notes`, `raw_model_output`, `query_plan`, `evidence_summary`).  
 3. `classification.py` either:
    - runs the **tool agent** (LLM can call `web_search`/`fetch_url` via Ollama `/api/chat`) and parses the final JSON, or  
    - falls back to a **single-shot prompt** enriched with any evidence gathered by `research.py`.  
-4. `research.py` houses the DuckDuckGo OpenAPI client (POST to your local MCP server at `http://localhost:8000` by default), the HTML fetcher, and a `ResearchPipeline` that builds queries and returns `EvidenceDocument`s.  
+4. `research.py` houses the DuckDuckGo OpenAPI client (POST to your local MCP server at `http://localhost:8000` by default), the HTML fetcher, and a `ResearchPipeline` that now consumes a `QueryPlan` before collecting `EvidenceDocument`s.  
 5. `agentic.py` defines the tool loop and abstracts the two tools. It automatically exits—and `classification.py` falls back—if the model/runtime cannot service `/api/chat` (e.g., current `llama3` build on M1).  
+6. `planning.py` (LLM-backed query planner) and `summarizer.py` (evidence-to-bullets summarizer) provide the new intermediate stages so the final classifier sees a compact rationale along with raw excerpts.  
 
 
 CLI Usage Cheatsheet
@@ -43,6 +44,7 @@ Key flags:
 - `--agent-max-iterations` – caps the number of tool-call turns (default 6).  
 - `--limit` – helpful for dry runs.  
 - `--log-level DEBUG` – recommended when testing agent mode to see tool requests/responses and any JSON recovery.
+- `--ignore-cache` – forces every row to recompute even if the target output CSV already contains a prior result. Leave unset for automatic row-level caching/resume behavior.
 
 
 Current Capabilities & Behavior
@@ -50,7 +52,8 @@ Current Capabilities & Behavior
 
 * **Input expectations** – CSV must provide `Company Name` and `Full Address`. Missing addresses log a warning and produce empty rows.  
 * **Ollama integration** – All inference is local. The single-shot path hits `/api/generate`; the agent path uses `/api/chat`. If `/api/chat` returns 400 (current behavior on M1 llama3), the system logs the issue and reruns the request in single-shot mode.  
-* **Evidence handling** – When web research is enabled (but agent mode isn’t), the pipeline searches DuckDuckGo via the OpenAPI proxy, fetches up to `max_documents` pages, and injects trimmed text into the prompt.  
+* **Evidence handling** – When web research is enabled (but agent mode isn’t), the pipeline now: (a) asks the planner for targeted queries, (b) runs the DuckDuckGo+fetch loop, (c) summarizes the harvested docs into a short rationale, and (d) feeds both the summary and raw evidence into the classifier prompt.  
+* **Row-level cache** – If the destination CSV already exists, its rows are keyed by `(Company Name, Full Address)` and reused automatically so reruns can pick up where they left off. Pass `--ignore-cache` to recompute from scratch.  
 * **JSON robustness** – `_parse_model_response` now attempts to salvage JSON even if the model wraps it with narration (it scans the response for the first `{...}` block). If no valid JSON is found, `notes` explains the failure and the raw output is preserved for debugging.  
 * **Logging** – Rich INFO/DEBUG logs track client initialization, row processing, agent loop iterations, search queries, and JSON parsing issues. Use `--log-level DEBUG` whenever you want to inspect the raw evidence flow.  
 * **Dependencies** – `requests` and `beautifulsoup4` are required (see `requirements.txt`). The `.venv` you created already has them installed.  
@@ -63,7 +66,7 @@ Known Limitations / Future Work
 2. **Search quality** – DuckDuckGo via MCP is functional but simplistic. Consider swapping in a richer search API (Brave Search, Bing, SerpAPI) once you’re ready for Stage 2/3 work. The `DuckDuckGoAPIClient` interface makes this a drop-in change.  
 3. **Evidence aggregation** – Currently we just slice the page text. Future steps include smarter HTML cleaning, source ranking, and capturing explicit citations/URLs in the final CSV.  
 4. **JSON schema enforcement** – We still ask the model for a simple object. Eventually we’ll want a stricter schema (site_type enum, confidence enum, array of sources) plus validation.  
-5. **Scalability** – No batching, retry, or long-run resilience yet (e.g., rate limiting, caching). Before running all 800 rows, add checkpoints and maybe a resume mechanism.  
+5. **Scalability** – No batching, retry, or long-run resilience yet (e.g., rate limiting, smarter cache invalidation). Before running all 800 rows, add checkpoints and maybe a resume mechanism.  
 6. **Model selection** – README previously referenced local LLMs generically. Final plan is to use stronger models such as Deepseek-R1-70B or Llama 4 variants on the workstation GPU(s). When you switch models, update the CLI defaults or pass `--model` explicitly.  
 
 

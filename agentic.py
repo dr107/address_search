@@ -195,6 +195,8 @@ class ToolAgent:
         if not query:
             return json.dumps({"error": "web_search requires a non-empty query"})
 
+        logger.info("Agent web_search query='%s' (count=%d)", query, count)
+
         try:
             results = self.search_client.search(query=query, max_results=count)
         except Exception as exc:  # broad since network errors vary
@@ -213,6 +215,8 @@ class ToolAgent:
         url = str(args.get("url", "")).strip()
         if not url:
             return json.dumps({"error": "fetch_url requires a URL"})
+
+        logger.info("Agent fetch_url %s", url)
 
         try:
             content = self.page_fetcher.fetch(url)

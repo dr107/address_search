@@ -1,7 +1,7 @@
 import csv
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from agentic import AgenticConfig
 from classification import run_model_on_address
@@ -12,7 +12,9 @@ from constants import (
     OUTPUT_EXTRA_HEADERS,
 )
 from ollama import OllamaClient
+from planning import QueryPlan, QueryPlanner
 from research import DuckDuckGoAPIClient, PageFetcher, ResearchPipeline
+from summarizer import EvidenceSummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,44 @@ def write_output_csv(
         writer.writerows(rows)
 
 
+def _cache_key(company: str, address: str) -> Optional[Tuple[str, str]]:
+    company_key = (company or "").strip().lower()
+    address_key = (address or "").strip().lower()
+    if not company_key and not address_key:
+        return None
+    return (company_key, address_key)
+
+
+def load_cached_rows(path: Path) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    if not path.exists():
+        return {}
+
+    logger.info("Loading cached results from %s", path)
+    cached_data = read_input_csv(path)
+    cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in cached_data:
+        key = _cache_key(row.get(COMPANY_COLUMN, ""), row.get(ADDRESS_COLUMN, ""))
+        if key:
+            cache[key] = row
+    logger.info("Loaded %d cached row(s).", len(cache))
+    return cache
+
+
+def format_query_plan(plan: Optional[QueryPlan]) -> str:
+    if not plan:
+        return ""
+
+    parts = []
+    rationale = plan.rationale.strip()
+    if rationale:
+        parts.append(rationale)
+
+    if plan.queries:
+        parts.append("Queries: " + "; ".join(plan.queries))
+
+    return " | ".join(parts)
+
+
 def _should_use_agentic_loop(
     agentic_mode: str,
     model_name: str,
@@ -78,6 +118,7 @@ def process_file(
     agentic_mode: str = "auto",
     agentic_model_hints: Optional[List[str]] = None,
     agent_max_iterations: int = 6,
+    ignore_cache: bool = False,
 ) -> None:
     """
     - Read input CSV
@@ -89,6 +130,12 @@ def process_file(
 
     logger.info("Initializing Ollama client (%s)", ollama_url)
     client = OllamaClient(base_url=ollama_url)
+
+    query_planner: Optional[QueryPlanner] = None
+    evidence_summarizer: Optional[EvidenceSummarizer] = None
+    if enable_web_research:
+        query_planner = QueryPlanner(client=client, model_name=model_name)
+        evidence_summarizer = EvidenceSummarizer(client=client, model_name=model_name)
 
     hints = agentic_model_hints or DEFAULT_AGENTIC_MODEL_HINTS
     use_agentic_tools = _should_use_agentic_loop(
@@ -118,26 +165,41 @@ def process_file(
         )
         fetcher = PageFetcher(timeout=fetch_timeout)
 
-    if enable_web_research and not use_agentic_tools and search_client and fetcher:
-        logger.info(
-            "Web research (pipeline) enabled (max_search_results=%d, max_documents=%d)",
-            max_search_results,
-            max_documents,
-        )
+    if enable_web_research and search_client and fetcher:
+        if use_agentic_tools:
+            logger.info(
+                "Web research pipeline enabled alongside agentic tools (max_search_results=%d, max_documents=%d)",
+                max_search_results,
+                max_documents,
+            )
+        else:
+            logger.info(
+                "Web research (pipeline) enabled (max_search_results=%d, max_documents=%d)",
+                max_search_results,
+                max_documents,
+            )
+
         research_pipeline = ResearchPipeline(
             search_client=search_client,
             page_fetcher=fetcher,
             max_search_results=max_search_results,
             max_documents=max_documents,
+            planner=query_planner,
         )
     elif not enable_web_research:
         logger.info("Web research pipeline disabled for this run.")
     else:
-        logger.info("Web research pipeline skipped because agentic tools are active.")
+        logger.info("Web research pipeline unavailable: search stack not initialized.")
 
     logger.info("Loading input CSV from %s", input_path)
     input_rows = read_input_csv(input_path)
     logger.info("Loaded %d rows from %s", len(input_rows), input_path)
+
+    cached_rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    if not ignore_cache:
+        cached_rows = load_cached_rows(output_path)
+    else:
+        logger.info("Cache disabled via --ignore-cache")
 
     # detect headers so we preserve column order
     if input_rows:
@@ -166,11 +228,40 @@ def process_file(
                 "Row %d missing '%s' field; skipping model call.", idx, ADDRESS_COLUMN
             )
 
+        cache_key = _cache_key(company, address)
+        cache_hit = cached_rows.get(cache_key) if cache_key else None
+
+        if cache_hit:
+            logger.debug(
+                "Cache hit for row %d (%s | %s); reusing previous classification.",
+                idx,
+                company,
+                address,
+            )
+            merged = {**row}
+            for header in OUTPUT_EXTRA_HEADERS:
+                if header in cache_hit:
+                    merged[header] = cache_hit[header]
+            output_rows.append(merged)
+            continue
+
         evidence_docs = []
+        query_plan: Optional[QueryPlan] = None
         if research_pipeline:
-            evidence_docs = research_pipeline.collect_evidence(
+            evidence_docs, query_plan = research_pipeline.collect_evidence(
                 company=company, address=address
             )
+
+        plan_summary = format_query_plan(query_plan)
+
+        evidence_summary_text = ""
+        if evidence_summarizer:
+            summary = evidence_summarizer.summarize(
+                company=company,
+                address=address,
+                evidence=evidence_docs,
+            )
+            evidence_summary_text = summary.text
 
         agent_config = AgenticConfig(
             enabled=use_agentic_tools,
@@ -186,9 +277,14 @@ def process_file(
             model_name=model_name,
             evidence=evidence_docs,
             agent_config=agent_config,
+            evidence_summary=evidence_summary_text,
         )
 
         merged = {**row, **model_result}
+        if plan_summary:
+            merged["query_plan"] = plan_summary
+        if evidence_summary_text:
+            merged["evidence_summary"] = evidence_summary_text
         output_rows.append(merged)
 
     logger.info("Writing %d enriched row(s) to %s", len(output_rows), output_path)
