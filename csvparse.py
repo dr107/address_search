@@ -49,6 +49,23 @@ def write_output_csv(
         writer.writerows(rows)
 
 
+def _persist_progress(
+    output_rows: List[Dict[str, Any]],
+    original_headers: List[str],
+    output_path: Path,
+) -> None:
+    if not output_rows:
+        return
+    logger.info(
+        "Persisting %d row(s) to %s", len(output_rows), output_path
+    )
+    write_output_csv(
+        path=output_path,
+        rows=output_rows,
+        original_headers=original_headers,
+    )
+
+
 def _cache_key(company: str, address: str) -> Optional[Tuple[str, str]]:
     company_key = (company or "").strip().lower()
     address_key = (address or "").strip().lower()
@@ -87,6 +104,23 @@ def format_query_plan(plan: Optional[QueryPlan]) -> str:
     return " | ".join(parts)
 
 
+def format_category_signature(categories: Optional[List[Dict[str, str]]]) -> str:
+    if not categories:
+        return ""
+
+    parts = []
+    for entry in categories:
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            continue
+        description = str(entry.get("description", "") or "").strip()
+        if description:
+            parts.append(f"{name}: {description}")
+        else:
+            parts.append(name)
+    return " | ".join(parts)
+
+
 def _should_use_agentic_loop(
     agentic_mode: str,
     model_name: str,
@@ -119,7 +153,8 @@ def process_file(
     agentic_model_hints: Optional[List[str]] = None,
     agent_max_iterations: int = 6,
     ignore_cache: bool = False,
-    category_suggestions: Optional[List[str]] = None,
+    category_suggestions: Optional[List[Dict[str, str]]] = None,
+    batch_size: int = 5,
 ) -> None:
     """
     - Read input CSV
@@ -139,7 +174,7 @@ def process_file(
         evidence_summarizer = EvidenceSummarizer(client=client, model_name=model_name)
 
     category_hint_list = category_suggestions or []
-    category_hint_text = ", ".join(category_hint_list)
+    category_hint_text = format_category_signature(category_hint_list)
 
     hints = agentic_model_hints or DEFAULT_AGENTIC_MODEL_HINTS
     use_agentic_tools = _should_use_agentic_loop(
@@ -212,6 +247,8 @@ def process_file(
         original_headers = [ADDRESS_COLUMN]
 
     output_rows: List[Dict[str, Any]] = []
+    rows_since_flush = 0
+    batch_size = max(1, batch_size)
 
     if limit is not None:
         if limit < 0:
@@ -247,6 +284,14 @@ def process_file(
                 if header in cache_hit:
                     merged[header] = cache_hit[header]
             output_rows.append(merged)
+            rows_since_flush += 1
+            if rows_since_flush >= batch_size:
+                _persist_progress(
+                    output_rows=output_rows,
+                    original_headers=original_headers,
+                    output_path=output_path,
+                )
+                rows_since_flush = 0
             continue
         elif cache_hit:
             logger.debug(
@@ -287,7 +332,7 @@ def process_file(
             client=client,
             model_name=model_name,
             evidence=evidence_docs,
-            category_suggestions=category_hint_list,
+            category_suggestions=category_hint_list if category_hint_list else None,
             agent_config=agent_config,
             evidence_summary=evidence_summary_text,
         )
@@ -302,11 +347,28 @@ def process_file(
         elif "category_suggestions" not in merged:
             merged["category_suggestions"] = ""
         output_rows.append(merged)
+        rows_since_flush += 1
+        if rows_since_flush >= batch_size:
+            _persist_progress(
+                output_rows=output_rows,
+                original_headers=original_headers,
+                output_path=output_path,
+            )
+            rows_since_flush = 0
 
-    logger.info("Writing %d enriched row(s) to %s", len(output_rows), output_path)
-    write_output_csv(
-        path=output_path,
-        rows=output_rows,
-        original_headers=original_headers,
-    )
+    if output_rows:
+        if rows_since_flush > 0:
+            _persist_progress(
+                output_rows=output_rows,
+                original_headers=original_headers,
+                output_path=output_path,
+            )
+    else:
+        logger.info("No rows processed; writing empty output file to %s", output_path)
+        write_output_csv(
+            path=output_path,
+            rows=[],
+            original_headers=original_headers,
+        )
+
     logger.info("Finished writing %s", output_path)

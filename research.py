@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
@@ -44,8 +45,7 @@ class DuckDuckGoAPIClient:
         timeout: int = 15,
         safe_search: str = "moderate",
     ):
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        self.headers = {"User-Agent": USER_AGENT}
         self.timeout = timeout
         self.base_url = base_url.rstrip("/")
         self.safe_search = safe_search
@@ -58,10 +58,11 @@ class DuckDuckGoAPIClient:
             "query": query,
             "max_results": max(1, min(20, max_results)),
         }
-        resp = self.session.post(
+        resp = requests.post(
             f"{self.base_url}/search",
             json=payload,
             timeout=self.timeout,
+            headers=self.headers,
         )
         resp.raise_for_status()
 
@@ -183,13 +184,12 @@ class PageFetcher:
     """
 
     def __init__(self, timeout: int = 20):
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        self.headers = {"User-Agent": USER_AGENT}
         self.timeout = timeout
 
     def fetch(self, url: str) -> str:
         logger.debug("Fetching URL: %s", url)
-        resp = self.session.get(url, timeout=self.timeout)
+        resp = requests.get(url, timeout=self.timeout, headers=self.headers)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -218,6 +218,7 @@ class ResearchPipeline:
         self.max_search_results = max(1, max_search_results)
         self.max_documents = max(1, max_documents)
         self.planner = planner
+        self.max_workers = max(1, max_documents * 2)
 
     def build_queries(self, company: str, address: str) -> List[str]:
         parts = [f'"{company}" "{address}"'.strip()]
@@ -273,41 +274,55 @@ class ResearchPipeline:
             queries,
         )
 
-        for query in queries:
-            try:
-                results = self.search_client.search(
-                    query=query, max_results=self.max_search_results
-                )
-            except requests.RequestException as exc:
-                logger.warning("Search request failed for '%s': %s", query, exc)
+        aggregated_results: List[SearchResult] = []
+        search_workers = min(len(queries), self.max_workers)
+
+        if search_workers > 1:
+            with ThreadPoolExecutor(max_workers=search_workers) as executor:
+                future_map = {
+                    executor.submit(self._safe_search, query): query for query in queries
+                }
+                for future in as_completed(future_map):
+                    aggregated_results.extend(future.result())
+        else:
+            for query in queries:
+                aggregated_results.extend(self._safe_search(query))
+
+        fetch_candidates: List[SearchResult] = []
+        for result in aggregated_results:
+            if result.url in seen_urls:
                 continue
+            seen_urls.add(result.url)
+            fetch_candidates.append(result)
 
-            for result in results:
-                if result.url in seen_urls:
-                    continue
-                seen_urls.add(result.url)
+        if not fetch_candidates:
+            logger.debug(
+                "Collected %d evidence document(s) for company=%s address=%s",
+                len(documents),
+                company,
+                address,
+            )
+            return documents, plan
 
-                try:
-                    content = self.page_fetcher.fetch(result.url)
-                except requests.RequestException as exc:
-                    logger.warning("Failed to fetch %s: %s", result.url, exc)
-                    continue
+        fetch_workers = min(self.max_workers, max(1, self.max_documents * 2))
 
-                documents.append(
-                    EvidenceDocument(
-                        url=result.url,
-                        title=result.title,
-                        snippet=result.snippet,
-                        content=content,
-                    )
-                )
-
+        if fetch_workers > 1:
+            with ThreadPoolExecutor(max_workers=fetch_workers) as executor:
+                futures = [executor.submit(self._fetch_document, item) for item in fetch_candidates]
+                for future in as_completed(futures):
+                    if len(documents) >= self.max_documents:
+                        break
+                    doc = future.result()
+                    if doc:
+                        documents.append(doc)
+        else:
+            for result in fetch_candidates:
+                doc = self._fetch_document(result)
+                if doc:
+                    documents.append(doc)
                 if len(documents) >= self.max_documents:
-                    logger.debug(
-                        "Reached max_documents=%d; stopping evidence collection.",
-                        self.max_documents,
-                    )
-                    return documents, plan
+                    break
+
         logger.debug(
             "Collected %d evidence document(s) for company=%s address=%s",
             len(documents),
@@ -315,3 +330,26 @@ class ResearchPipeline:
             address,
         )
         return documents, plan
+
+    def _safe_search(self, query: str) -> List[SearchResult]:
+        try:
+            return self.search_client.search(
+                query=query, max_results=self.max_search_results
+            )
+        except requests.RequestException as exc:
+            logger.warning("Search request failed for '%s': %s", query, exc)
+            return []
+
+    def _fetch_document(self, result: SearchResult) -> Optional[EvidenceDocument]:
+        try:
+            content = self.page_fetcher.fetch(result.url)
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch %s: %s", result.url, exc)
+            return None
+
+        return EvidenceDocument(
+            url=result.url,
+            title=result.title,
+            snippet=result.snippet,
+            content=content,
+        )

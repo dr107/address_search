@@ -1,0 +1,5 @@
+[
+  {"name": "manufacturing", "description": "Produces goods or pharmaceuticals on-site"},
+  {"name": "distribution", "description": "Warehousing, logistics, or order fulfillment"},
+  {"name": "office", "description": "Corporate or administrative offices"}
+]

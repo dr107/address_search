@@ -32,7 +32,7 @@ def build_prompt(
     address: str,
     evidence: Optional[List[EvidenceDocument]],
     summary: Optional[str] = None,
-    category_suggestions: Optional[List[str]] = None,
+    category_suggestions: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
     Placeholder prompt enriched with gathered evidence.
@@ -42,11 +42,21 @@ def build_prompt(
     evidence_text = _format_evidence(evidence)
     summary_text = summary.strip() if summary else "No summarized evidence was available."
     if category_suggestions:
-        guidance_lines = "\n".join(f"- {label}" for label in category_suggestions)
+        guidance_lines = []
+        for entry in category_suggestions:
+            name = str(entry.get("name", "")).strip()
+            if not name:
+                continue
+            description = str(entry.get("description", "") or "").strip()
+            if description:
+                guidance_lines.append(f"- {name}: {description}")
+            else:
+                guidance_lines.append(f"- {name}")
+        guidance_blob = "\n".join(guidance_lines)
         category_text = (
             "Use one of the suggested site_type categories below when possible."
             " If none fit, you may craft a new category that better matches the evidence.\n"
-            f"Suggested categories:\n{guidance_lines}"
+            f"Suggested categories:\n{guidance_blob}"
         )
     else:
         category_text = (
@@ -79,7 +89,7 @@ def run_model_on_address(
     client: OllamaClient,
     model_name: str,
     evidence: Optional[List[EvidenceDocument]] = None,
-    category_suggestions: Optional[List[str]] = None,
+    category_suggestions: Optional[List[Dict[str, str]]] = None,
     evidence_summary: Optional[str] = None,
     agent_config: Optional[AgenticConfig] = None,
 ) -> Dict[str, Any]:

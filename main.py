@@ -1,8 +1,9 @@
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 
 from csvparse import process_file
 
@@ -96,13 +97,65 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--categories",
+        "--categories-file",
         help=(
-            "Comma-separated list of suggested site_type categories. If omitted, the model invents its own."
+            "Path to a JSON file describing suggested site_type categories (with descriptions)."
+        ),
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=5,
+        help=(
+            "Number of rows to process before persisting progress (default: 5)."
         ),
     )
 
     return parser.parse_args(argv)
+
+
+def load_category_hints(path_str: str | None) -> List[Dict[str, str]]:
+    if not path_str:
+        return []
+
+    file_path = Path(path_str)
+    if not file_path.exists():
+        print(f"ERROR: categories file {file_path} does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: failed to parse categories file {file_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if isinstance(data, dict) and "categories" in data:
+        data = data["categories"]
+
+    if not isinstance(data, list):
+        print(
+            f"ERROR: categories file {file_path} must contain a list or an object with a 'categories' list.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    categories: List[Dict[str, str]] = []
+    for entry in data:
+        if isinstance(entry, str):
+            name = entry.strip()
+            description = ""
+        elif isinstance(entry, dict):
+            name = str(entry.get("name", "")).strip()
+            description = str(entry.get("description", "") or "").strip()
+        else:
+            continue
+
+        if not name:
+            continue
+
+        categories.append({"name": name, "description": description})
+
+    return categories
 
 
 def main(argv: List[str]) -> None:
@@ -120,7 +173,7 @@ def main(argv: List[str]) -> None:
         if hint.strip()
     ]
 
-    categories = [c.strip() for c in (args.categories or "").split(",") if c.strip()]
+    categories = load_category_hints(args.categories_file)
 
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -145,6 +198,7 @@ def main(argv: List[str]) -> None:
         agent_max_iterations=args.agent_max_iterations,
         ignore_cache=args.ignore_cache,
         category_suggestions=categories if categories else None,
+        batch_size=args.batch_size,
     )
 
     print(f"Done. Wrote {output_path}")

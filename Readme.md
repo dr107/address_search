@@ -45,15 +45,26 @@ Key flags:
 - `--limit` – helpful for dry runs.  
 - `--log-level DEBUG` – recommended when testing agent mode to see tool requests/responses and any JSON recovery.
 - `--ignore-cache` – forces every row to recompute even if the target output CSV already contains a prior result. Leave unset for automatic row-level caching/resume behavior.
-- `--categories` – pass a comma-separated list of site_type suggestions. If omitted, the model invents categories on the fly; when provided, both the single-shot and agentic prompts are constrained to prefer your list (and the column is persisted for caching).
+- `--categories-file` – path to a JSON file describing category options. File format: a list (or `{ "categories": [...] }`) of objects with `name` and optional `description`. Example: `categories.sample.json`. If omitted, the model invents categories on the fly; when provided, both the single-shot and agentic prompts prefer your named options and the `category_suggestions` column records which guidance was used.
+- `--batch-size` – number of rows to process before persisting progress (default 5). Each batch rewrite updates the output CSV so long runs can resume with minimal loss if interrupted.
+
+Categories file example (`categories.sample.json`):
+
+```
+[
+  {"name": "manufacturing", "description": "Produces goods or pharmaceuticals on-site"},
+  {"name": "distribution", "description": "Warehousing, logistics, or order fulfillment"},
+  {"name": "office", "description": "Corporate or administrative offices"}
+]
+```
 
 
 Current Capabilities & Behavior
 -------------------------------
 
-* **Input expectations** – CSV must provide `Company Name` and `Full Address`. Missing addresses log a warning and produce empty rows. Optional `--categories` guidance is stored in the `category_suggestions` column so cache hits remain accurate when you change the hints.  
+* **Input expectations** – CSV must provide `Company Name` and `Full Address`. Missing addresses log a warning and produce empty rows. Optional categories guidance (via `--categories-file`) is stored in the `category_suggestions` column so cache hits remain accurate when you change the hints.  
 * **Ollama integration** – All inference is local. The single-shot path hits `/api/generate`; the agent path uses `/api/chat`. If `/api/chat` returns 400 (current behavior on M1 llama3), the system logs the issue and reruns the request in single-shot mode.  
-* **Evidence handling** – When web research is enabled (but agent mode isn’t), the pipeline now: (a) asks the planner for targeted queries, (b) runs the DuckDuckGo+fetch loop, (c) summarizes the harvested docs into a short rationale, and (d) feeds both the summary and raw evidence into the classifier prompt.  
+* **Evidence handling** – When web research is enabled, the pipeline now: (a) asks the planner for targeted queries, (b) executes DuckDuckGo searches **in parallel** when multiple queries are generated, (c) fetches candidate pages concurrently, (d) summarizes the harvested docs into a short rationale, and (e) feeds both the summary and raw evidence into the classifier/agent prompts.  
 * **Row-level cache** – If the destination CSV already exists, its rows are keyed by `(Company Name, Full Address)` and reused automatically so reruns can pick up where they left off. Pass `--ignore-cache` to recompute from scratch.  
 * **JSON robustness** – `_parse_model_response` now attempts to salvage JSON even if the model wraps it with narration (it scans the response for the first `{...}` block). If no valid JSON is found, `notes` explains the failure and the raw output is preserved for debugging.  
 * **Logging** – Rich INFO/DEBUG logs track client initialization, row processing, agent loop iterations, search queries, and JSON parsing issues. Use `--log-level DEBUG` whenever you want to inspect the raw evidence flow.  
@@ -67,7 +78,7 @@ Known Limitations / Future Work
 2. **Search quality** – DuckDuckGo via MCP is functional but simplistic. Consider swapping in a richer search API (Brave Search, Bing, SerpAPI) once you’re ready for Stage 2/3 work. The `DuckDuckGoAPIClient` interface makes this a drop-in change.  
 3. **Evidence aggregation** – Currently we just slice the page text. Future steps include smarter HTML cleaning, source ranking, and capturing explicit citations/URLs in the final CSV.  
 4. **JSON schema enforcement** – We still ask the model for a simple object. Eventually we’ll want a stricter schema (site_type enum, confidence enum, array of sources) plus validation.  
-5. **Scalability** – No batching, retry, or long-run resilience yet (e.g., rate limiting, smarter cache invalidation). Before running all 800 rows, add checkpoints and maybe a resume mechanism.  
+5. **Scalability** – No batching, retry, or long-run resilience yet (e.g., rate limiting, smarter cache invalidation). Before running all 800 rows, add checkpoints and maybe a resume mechanism. Parallel web fetches improve latency, but there’s still no backoff logic if many sites block requests.  
 6. **Model selection** – README previously referenced local LLMs generically. Final plan is to use stronger models such as Deepseek-R1-70B or Llama 4 variants on the workstation GPU(s). When you switch models, update the CLI defaults or pass `--model` explicitly.  
 
 

@@ -43,7 +43,7 @@ class ToolAgent:
         self,
         company_name: str,
         address: str,
-        categories: Optional[List[str]] = None,
+        categories: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """
         Run the agent loop until the model emits a final answer (JSON string).
@@ -127,13 +127,24 @@ class ToolAgent:
 
         raise ToolAgentError("Agent loop exhausted without final response.")
 
-    def _category_guidance(self, categories: Optional[List[str]]) -> str:
+    def _category_guidance(self, categories: Optional[List[Dict[str, str]]]) -> str:
         if categories:
-            formatted = "\n".join(f"- {label}" for label in categories)
-            return (
-                "Prefer one of the following site_type categories when possible:\n"
-                f"{formatted}\nIf none fit, craft a concise alternative."
-            )
+            lines = []
+            for entry in categories:
+                name = str(entry.get("name", "")).strip()
+                if not name:
+                    continue
+                description = str(entry.get("description", "") or "").strip()
+                if description:
+                    lines.append(f"- {name}: {description}")
+                else:
+                    lines.append(f"- {name}")
+            formatted = "\n".join(lines)
+            if formatted:
+                return (
+                    "Prefer one of the following site_type categories when possible:\n"
+                    f"{formatted}\nIf none fit, craft a concise alternative."
+                )
         return (
             "You may define any sensible site_type label based on the evidence; keep the wording concise."
         )
