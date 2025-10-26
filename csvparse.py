@@ -74,7 +74,7 @@ def process_file(
     max_search_results: int = 5,
     max_documents: int = 3,
     fetch_timeout: int = 20,
-    search_api_url: str = "http://localhost:8001",
+    search_api_url: str = "http://localhost:8000",
     agentic_mode: str = "auto",
     agentic_model_hints: Optional[List[str]] = None,
     agent_max_iterations: int = 6,

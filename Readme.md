@@ -16,7 +16,7 @@ High-Level Flow
 3. `classification.py` either:
    - runs the **tool agent** (LLM can call `web_search`/`fetch_url` via Ollama `/api/chat`) and parses the final JSON, or  
    - falls back to a **single-shot prompt** enriched with any evidence gathered by `research.py`.  
-4. `research.py` houses the DuckDuckGo OpenAPI client (POST to your local MCP server at `http://localhost:8001` by default), the HTML fetcher, and a `ResearchPipeline` that builds queries and returns `EvidenceDocument`s.  
+4. `research.py` houses the DuckDuckGo OpenAPI client (POST to your local MCP server at `http://localhost:8000` by default), the HTML fetcher, and a `ResearchPipeline` that builds queries and returns `EvidenceDocument`s.  
 5. `agentic.py` defines the tool loop and abstracts the two tools. It automatically exits—and `classification.py` falls back—if the model/runtime cannot service `/api/chat` (e.g., current `llama3` build on M1).  
 
 
@@ -24,7 +24,7 @@ CLI Usage Cheatsheet
 --------------------
 
 ```
-source .venv/bin/activate
+source venv/bin/activate
 python main.py \
   --input data/nj_companies.csv \
   --output data/short_out.csv \
@@ -38,7 +38,7 @@ python main.py \
 Key flags:
 - `--enable-web-research` – engages the pre-agent research pipeline (DuckDuckGo API + page fetch) and passes the evidence into the single-shot prompt.  
 - `--agentic-mode {auto,on,off}` – controls the tool loop. `auto` checks `--model` against `--agentic-model-hints` (defaults include `llama3`, `llama4`, `deepseek`). If a compatible model is detected and Ollama’s `/api/chat` works, the agent drives its own search/fetch calls. Otherwise the code falls back gracefully and logs a warning.  
-- `--search-api-url` – base URL for your DuckDuckGo MCP server (`http://localhost:8001`).  
+- `--search-api-url` – base URL for your DuckDuckGo MCP server (`http://localhost:8000`).  
 - `--max-search-results`, `--max-documents`, `--fetch-timeout` – tune the research intensity.  
 - `--agent-max-iterations` – caps the number of tool-call turns (default 6).  
 - `--limit` – helpful for dry runs.  
@@ -71,7 +71,7 @@ Quick “When You Return” Checklist
 ---------------------------------
 
 1. Pull latest code and confirm your workstation has `requests`, `beautifulsoup4`, and any other dependencies installed.  
-2. Ensure the DuckDuckGo MCP server is running at `http://localhost:8001`.  
+2. Ensure the DuckDuckGo MCP server is running at `http://localhost:8000`.  
 3. Test a small batch with the target high-power model, enabling agent mode (`--agentic-mode on --log-level DEBUG`) to verify tool calls.  
 4. Decide whether to run with the external research pipeline, pure agent mode, or both (agent mode currently bypasses the pipeline to avoid duplicated searches).  
 5. Plan Stage 2 work: better query templates, evidence structuring, and schema validation.  

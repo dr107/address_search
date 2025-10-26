@@ -68,8 +68,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--search-api-url",
-        default="http://localhost:8001",
-        help="Base URL for the local DuckDuckGo OpenAPI server (default: http://localhost:8001).",
+        default="http://localhost:8000",
+        help="Base URL for the local DuckDuckGo OpenAPI server (default: http://localhost:8000).",
     )
     parser.add_argument(
         "--agentic-mode",

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -37,7 +38,7 @@ class DuckDuckGoAPIClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8001",
+        base_url: str = "http://localhost:8000",
         timeout: int = 15,
         safe_search: str = "moderate",
     ):
@@ -53,18 +54,17 @@ class DuckDuckGoAPIClient:
         )
         payload = {
             "query": query,
-            "count": max(1, min(20, max_results)),
-            "safeSearch": self.safe_search,
+            "max_results": max(1, min(20, max_results)),
         }
         resp = self.session.post(
-            f"{self.base_url}/duckduckgo_web_search",
+            f"{self.base_url}/search",
             json=payload,
             timeout=self.timeout,
         )
         resp.raise_for_status()
 
         data = resp.json()
-        items: Optional[List[dict]] = None
+        items: Optional[List[Any]] = None
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
@@ -74,11 +74,31 @@ class DuckDuckGoAPIClient:
                 items = data["data"]
 
         results: List[SearchResult] = []
+
+        if not items:
+            blob: Optional[str] = None
+            if isinstance(data, str):
+                blob = data
+            elif (
+                isinstance(data, dict)
+                and isinstance(data.get("result"), str)
+            ):
+                blob = data["result"]
+
+            if blob:
+                items = self._parse_structured_text(blob, max_results)
+
         if not items:
             logger.debug("DuckDuckGo API returned no parsable results for %s", query)
             return results
 
         for item in items:
+            if isinstance(item, SearchResult):
+                results.append(item)
+                if len(results) >= max_results:
+                    break
+                continue
+
             url = str(item.get("url", "")).strip()
             title = str(item.get("title", "") or item.get("name", "")).strip()
             snippet = str(
@@ -95,6 +115,63 @@ class DuckDuckGoAPIClient:
         logger.debug(
             "DuckDuckGo API returned %d result(s) for %s", len(results), query
         )
+        return results
+
+    @staticmethod
+    def _parse_structured_text(blob: str, limit: int) -> List[SearchResult]:
+        """Parse numbered text responses from the MCP search server."""
+
+        results: List[SearchResult] = []
+        current: Optional[dict] = None
+
+        def flush_current() -> None:
+            if not current:
+                return
+            url = current.get("url", "").strip()
+            title = current.get("title", "").strip()
+            snippet = current.get("snippet", "").strip()
+            if url and title:
+                results.append(
+                    SearchResult(
+                        url=url,
+                        title=title,
+                        snippet=snippet,
+                    )
+                )
+
+        for raw_line in blob.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            match = re.match(r"^(\d+)\.\s+(.*)$", line)
+            if match:
+                if len(results) >= limit:
+                    break
+                flush_current()
+                current = {"title": match.group(2).strip(), "snippet": ""}
+                continue
+
+            if current is None:
+                continue
+
+            if line.lower().startswith("url:"):
+                current["url"] = line.split(":", 1)[1].strip()
+                continue
+
+            if line.lower().startswith("summary:"):
+                current["snippet"] = line.split(":", 1)[1].strip()
+                continue
+
+            # Additional lines extend the snippet for better context.
+            snippet = current.get("snippet", "")
+            current["snippet"] = f"{snippet} {line}".strip()
+
+        if len(results) < limit:
+            flush_current()
+
+        if len(results) > limit:
+            return results[:limit]
         return results
 
 
