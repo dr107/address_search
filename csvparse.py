@@ -119,6 +119,7 @@ def process_file(
     agentic_model_hints: Optional[List[str]] = None,
     agent_max_iterations: int = 6,
     ignore_cache: bool = False,
+    category_suggestions: Optional[List[str]] = None,
 ) -> None:
     """
     - Read input CSV
@@ -136,6 +137,9 @@ def process_file(
     if enable_web_research:
         query_planner = QueryPlanner(client=client, model_name=model_name)
         evidence_summarizer = EvidenceSummarizer(client=client, model_name=model_name)
+
+    category_hint_list = category_suggestions or []
+    category_hint_text = ", ".join(category_hint_list)
 
     hints = agentic_model_hints or DEFAULT_AGENTIC_MODEL_HINTS
     use_agentic_tools = _should_use_agentic_loop(
@@ -231,7 +235,7 @@ def process_file(
         cache_key = _cache_key(company, address)
         cache_hit = cached_rows.get(cache_key) if cache_key else None
 
-        if cache_hit:
+        if cache_hit and cache_hit.get("category_suggestions", "") == category_hint_text:
             logger.debug(
                 "Cache hit for row %d (%s | %s); reusing previous classification.",
                 idx,
@@ -244,6 +248,13 @@ def process_file(
                     merged[header] = cache_hit[header]
             output_rows.append(merged)
             continue
+        elif cache_hit:
+            logger.debug(
+                "Cache miss for row %d due to category change (%s | %s).",
+                idx,
+                company,
+                address,
+            )
 
         evidence_docs = []
         query_plan: Optional[QueryPlan] = None
@@ -276,6 +287,7 @@ def process_file(
             client=client,
             model_name=model_name,
             evidence=evidence_docs,
+            category_suggestions=category_hint_list,
             agent_config=agent_config,
             evidence_summary=evidence_summary_text,
         )
@@ -285,6 +297,10 @@ def process_file(
             merged["query_plan"] = plan_summary
         if evidence_summary_text:
             merged["evidence_summary"] = evidence_summary_text
+        if category_hint_text:
+            merged["category_suggestions"] = category_hint_text
+        elif "category_suggestions" not in merged:
+            merged["category_suggestions"] = ""
         output_rows.append(merged)
 
     logger.info("Writing %d enriched row(s) to %s", len(output_rows), output_path)

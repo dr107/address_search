@@ -39,16 +39,23 @@ class ToolAgent:
         self.page_fetcher = page_fetcher
         self.max_iterations = max(1, max_iterations)
 
-    def classify(self, company_name: str, address: str) -> str:
+    def classify(
+        self,
+        company_name: str,
+        address: str,
+        categories: Optional[List[str]] = None,
+    ) -> str:
         """
         Run the agent loop until the model emits a final answer (JSON string).
         """
+        category_guidance = self._category_guidance(categories)
         messages = [
             {
                 "role": "system",
                 "content": (
                     "You are an investigative assistant that classifies business facilities. "
                     "Use the available tools to research the company/address before answering. "
+                    f"{category_guidance} "
                     "When you have enough evidence, respond with strict JSON:\n"
                     '{\n'
                     '  "site_type": "...",\n'
@@ -119,6 +126,17 @@ class ToolAgent:
                 return final_text
 
         raise ToolAgentError("Agent loop exhausted without final response.")
+
+    def _category_guidance(self, categories: Optional[List[str]]) -> str:
+        if categories:
+            formatted = "\n".join(f"- {label}" for label in categories)
+            return (
+                "Prefer one of the following site_type categories when possible:\n"
+                f"{formatted}\nIf none fit, craft a concise alternative."
+            )
+        return (
+            "You may define any sensible site_type label based on the evidence; keep the wording concise."
+        )
 
     def _tool_spec(self) -> List[Dict[str, Any]]:
         return [

@@ -11,6 +11,7 @@ OUTPUT_EXTRA_HEADERS = [
     "raw_model_output",
     "query_plan",
     "evidence_summary",
+    "category_suggestions",
 ]
 
 # Models we assume are capable of agentic/tool use when --agentic-mode=auto.

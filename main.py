@@ -29,8 +29,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="llama3.1-8b-instruct",
-        help="Model name/tag to use in Ollama. Default: llama3.1-8b-instruct",
+        default="llama3.1:70b-instruct-q4_0",
+        help="Model name/tag to use in Ollama. Default: llama3.1:70b-instruct-q4_0",
     )
     parser.add_argument(
         "--limit",
@@ -95,6 +95,12 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
             "If set, recompute every row even when the output CSV already contains prior results."
         ),
     )
+    parser.add_argument(
+        "--categories",
+        help=(
+            "Comma-separated list of suggested site_type categories. If omitted, the model invents its own."
+        ),
+    )
 
     return parser.parse_args(argv)
 
@@ -113,6 +119,8 @@ def main(argv: List[str]) -> None:
         for hint in (args.agentic_model_hints or "").split(",")
         if hint.strip()
     ]
+
+    categories = [c.strip() for c in (args.categories or "").split(",") if c.strip()]
 
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -136,6 +144,7 @@ def main(argv: List[str]) -> None:
         agentic_model_hints=agentic_model_hints,
         agent_max_iterations=args.agent_max_iterations,
         ignore_cache=args.ignore_cache,
+        category_suggestions=categories if categories else None,
     )
 
     print(f"Done. Wrote {output_path}")

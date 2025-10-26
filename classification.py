@@ -32,6 +32,7 @@ def build_prompt(
     address: str,
     evidence: Optional[List[EvidenceDocument]],
     summary: Optional[str] = None,
+    category_suggestions: Optional[List[str]] = None,
 ) -> str:
     """
     Placeholder prompt enriched with gathered evidence.
@@ -40,11 +41,24 @@ def build_prompt(
     display_address = address or "Unknown address"
     evidence_text = _format_evidence(evidence)
     summary_text = summary.strip() if summary else "No summarized evidence was available."
+    if category_suggestions:
+        guidance_lines = "\n".join(f"- {label}" for label in category_suggestions)
+        category_text = (
+            "Use one of the suggested site_type categories below when possible."
+            " If none fit, you may craft a new category that better matches the evidence.\n"
+            f"Suggested categories:\n{guidance_lines}"
+        )
+    else:
+        category_text = (
+            "You may define whatever site_type category best matches the facility."
+            " Ensure the label is concise and descriptive."
+        )
     return (
         "You are a helper for facility classification.\n"
         "Using the research summary and evidence below, determine what kind of site this is.\n"
         f"Company: {display_company}\n"
         f"Address: {display_address}\n\n"
+        f"Category guidance:\n{category_text}\n\n"
         "Research summary:\n"
         f"{summary_text}\n\n"
         "Evidence:\n"
@@ -65,6 +79,7 @@ def run_model_on_address(
     client: OllamaClient,
     model_name: str,
     evidence: Optional[List[EvidenceDocument]] = None,
+    category_suggestions: Optional[List[str]] = None,
     evidence_summary: Optional[str] = None,
     agent_config: Optional[AgenticConfig] = None,
 ) -> Dict[str, Any]:
@@ -110,6 +125,7 @@ def run_model_on_address(
             raw_output = tool_agent.classify(
                 company_name=company_name,
                 address=address,
+                categories=category_suggestions,
             )
             return _parse_model_response(raw_output, context=context)
         except ToolAgentError as exc:
@@ -132,6 +148,7 @@ def run_model_on_address(
         address=address,
         evidence=evidence,
         summary=evidence_summary,
+        category_suggestions=category_suggestions,
     )
 
     base_options = {

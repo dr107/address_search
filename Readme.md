@@ -7,12 +7,12 @@ You are building an address-enrichment pipeline that labels ~800 business locati
 High-Level Flow
 ---------------
 
-1. `main.py` handles CLI parsing (input/output paths, Ollama model/URL, logging level, row limits) and wires configuration to the processing pipeline.  
+1. `main.py` handles CLI parsing (input/output paths, Ollama model/URL, logging level, row limits) and wires configuration to the processing pipeline. Default inference model is now `llama3.1:70b-instruct-q4_0`.  
 2. `csvparse.process_file`  
    - loads the CSV (`Full Address` + `Company Name` columns expected) and optionally hydrates an **output-cache** from the previous run (skipped via `--ignore-cache`),  
    - determines whether to engage web research and/or the agentic tool loop,  
    - orchestrates the **planning ➞ research ➞ summarization ➞ classification** pipeline for each uncached row,  
-   - writes the enriched CSV (adds `site_type`, `confidence`, `notes`, `raw_model_output`, `query_plan`, `evidence_summary`).  
+   - writes the enriched CSV (adds `site_type`, `confidence`, `notes`, `raw_model_output`, `query_plan`, `evidence_summary`, `category_suggestions`).  
 3. `classification.py` either:
    - runs the **tool agent** (LLM can call `web_search`/`fetch_url` via Ollama `/api/chat`) and parses the final JSON, or  
    - falls back to a **single-shot prompt** enriched with any evidence gathered by `research.py`.  
@@ -30,7 +30,7 @@ python main.py \
   --input data/nj_companies.csv \
   --output data/short_out.csv \
   --limit 10 \
-  --model llama3.1-8b-instruct \
+  --model "llama3.1:70b-instruct-q4_0" \
   --enable-web-research \
   --agentic-mode auto \
   --log-level DEBUG
@@ -45,12 +45,13 @@ Key flags:
 - `--limit` – helpful for dry runs.  
 - `--log-level DEBUG` – recommended when testing agent mode to see tool requests/responses and any JSON recovery.
 - `--ignore-cache` – forces every row to recompute even if the target output CSV already contains a prior result. Leave unset for automatic row-level caching/resume behavior.
+- `--categories` – pass a comma-separated list of site_type suggestions. If omitted, the model invents categories on the fly; when provided, both the single-shot and agentic prompts are constrained to prefer your list (and the column is persisted for caching).
 
 
 Current Capabilities & Behavior
 -------------------------------
 
-* **Input expectations** – CSV must provide `Company Name` and `Full Address`. Missing addresses log a warning and produce empty rows.  
+* **Input expectations** – CSV must provide `Company Name` and `Full Address`. Missing addresses log a warning and produce empty rows. Optional `--categories` guidance is stored in the `category_suggestions` column so cache hits remain accurate when you change the hints.  
 * **Ollama integration** – All inference is local. The single-shot path hits `/api/generate`; the agent path uses `/api/chat`. If `/api/chat` returns 400 (current behavior on M1 llama3), the system logs the issue and reruns the request in single-shot mode.  
 * **Evidence handling** – When web research is enabled (but agent mode isn’t), the pipeline now: (a) asks the planner for targeted queries, (b) runs the DuckDuckGo+fetch loop, (c) summarizes the harvested docs into a short rationale, and (d) feeds both the summary and raw evidence into the classifier prompt.  
 * **Row-level cache** – If the destination CSV already exists, its rows are keyed by `(Company Name, Full Address)` and reused automatically so reruns can pick up where they left off. Pass `--ignore-cache` to recompute from scratch.  
