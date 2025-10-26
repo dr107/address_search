@@ -5,3 +5,12 @@ COMPANY_COLUMN = "Company Name"
 
 # Extra columns appended to the enriched CSV output.
 OUTPUT_EXTRA_HEADERS = ["site_type", "confidence", "notes", "raw_model_output"]
+
+# Models we assume are capable of agentic/tool use when --agentic-mode=auto.
+DEFAULT_AGENTIC_MODEL_HINTS = [
+    "llama3",
+    "llama-3",
+    "llama4",
+    "llama-4",
+    "deepseek",
+]

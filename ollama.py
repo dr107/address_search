@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import requests
 
@@ -53,3 +53,34 @@ class OllamaClient:
         )
         # Expected shape: {"model":"...","created_at":"...","response":"...","done":true,...}
         return data.get("response", "")
+
+    def chat(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        options: Optional[Dict[str, Any]] = None,
+        timeout: int = 300,
+    ) -> Dict[str, Any]:
+        """
+        Call /api/chat on Ollama for tool-capable models.
+        """
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        if options:
+            payload["options"] = options
+        if tools:
+            payload["tools"] = tools
+
+        url = f"{self.base_url}/api/chat"
+        logger.debug(
+            "Calling Ollama chat: url=%s model=%s tools=%s", url, model, bool(tools)
+        )
+        resp = requests.post(url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+
+        data = resp.json()
+        return data
