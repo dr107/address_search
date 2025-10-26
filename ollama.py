@@ -1,6 +1,9 @@
+import logging
 from typing import Optional, Dict, Any
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaClient:
@@ -38,9 +41,15 @@ class OllamaClient:
             payload["options"] = options
 
         url = f"{self.base_url}/api/generate"
+        logger.debug(
+            "Calling Ollama generate: url=%s model=%s options=%s", url, model, options
+        )
         resp = requests.post(url, json=payload, timeout=timeout)
         resp.raise_for_status()
 
         data = resp.json()
+        logger.debug(
+            "Ollama response metadata: model=%s done=%s", data.get("model"), data.get("done")
+        )
         # Expected shape: {"model":"...","created_at":"...","response":"...","done":true,...}
         return data.get("response", "")
