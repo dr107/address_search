@@ -175,6 +175,7 @@ class ResearchPipeline:
         max_search_results: int = 5,
         max_documents: int = 3,
         planner: Optional[QueryPlanner] = None,
+        expanded_queries: bool = False,
     ):
         self.search_client = search_client
         self.page_fetcher = page_fetcher
@@ -182,22 +183,43 @@ class ResearchPipeline:
         self.max_documents = max(1, max_documents)
         self.planner = planner
         self.max_workers = max(1, self.max_documents * 2)
+        self.expanded_queries = expanded_queries
 
     def build_queries(self, company: str, address: str) -> List[str]:
-        parts = [f'"{company}" "{address}"'.strip()]
+        company = (company or "").strip()
+        address = (address or "").strip()
+        queries: List[str] = []
+
         if company and address:
-            parts.append(f'"{company}" "{address.split(",")[0]}" facility')
+            queries.append(f'"{company}" "{address}"')
+            if self.expanded_queries:
+                first_segment = address.split(",")[0].strip()
+                if first_segment:
+                    queries.append(f'"{company}" "{first_segment}" facility')
+                queries.append(f'"{company}" facility types')
         elif company:
-            parts.append(f'"{company}" facility types')
+            queries.append(f'"{company}"')
+            if self.expanded_queries:
+                queries.append(f'"{company}" facility types')
         elif address:
-            parts.append(f'"{address}" facility')
+            queries.append(f'"{address}"')
+            if self.expanded_queries:
+                first_segment = address.split(",")[0].strip()
+                if first_segment:
+                    queries.append(f'"{first_segment}" facility')
 
         deduped: List[str] = []
-        for q in parts:
+        for q in queries:
             q = q.strip()
             if q and q not in deduped:
                 deduped.append(q)
-        logger.debug("Queries for company=%s address=%s -> %s", company, address, deduped)
+        logger.debug(
+            "Queries for company=%s address=%s (expanded=%s) -> %s",
+            company,
+            address,
+            self.expanded_queries,
+            deduped,
+        )
         return deduped
 
     def collect_evidence(

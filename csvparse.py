@@ -233,8 +233,13 @@ def process_file(
             page_fetcher=fetcher,
             max_search_results=max_search_results,
             max_documents=max_documents,
-            planner=query_planner,
+            planner=None,
+            expanded_queries=False,
         )
+        if query_planner:
+            logger.debug(
+                "Initial research pass uses heuristic combined queries; planner reserved for expanded retries."
+            )
     elif not enable_web_research:
         logger.info("Web research pipeline disabled for this run.")
     else:
@@ -373,14 +378,31 @@ def process_file(
         )
 
         if can_expand:
-            expanded_results = expanded_search_results if expanded_search_results is not None else max_search_results * 2
+            expanded_results = (
+                expanded_search_results
+                if expanded_search_results is not None
+                else max_search_results * 2
+            )
             expanded_results = max(expanded_results, max_search_results)
-            expanded_docs_limit = expanded_max_documents if expanded_max_documents is not None else max_documents * 2
+            expanded_docs_limit = (
+                expanded_max_documents
+                if expanded_max_documents is not None
+                else max_documents * 2
+            )
             expanded_docs_limit = max(expanded_docs_limit, max_documents)
 
+            current_max_results = (
+                research_pipeline.max_search_results if research_pipeline else max_search_results
+            )
+            current_max_documents = (
+                research_pipeline.max_documents if research_pipeline else max_documents
+            )
+            current_expanded = research_pipeline.expanded_queries if research_pipeline else False
+
             should_expand = (
-                expanded_results > (research_pipeline.max_search_results if research_pipeline else max_search_results)
-                or expanded_docs_limit > (research_pipeline.max_documents if research_pipeline else max_documents)
+                not current_expanded
+                or expanded_results > current_max_results
+                or expanded_docs_limit > current_max_documents
                 or not evidence_docs
             )
 
@@ -397,6 +419,7 @@ def process_file(
                     max_search_results=expanded_results,
                     max_documents=expanded_docs_limit,
                     planner=query_planner,
+                    expanded_queries=True,
                 )
                 new_evidence_docs, new_plan, new_search_calls, new_fetch_calls = expanded_pipeline.collect_evidence(
                     company=company, address=address
