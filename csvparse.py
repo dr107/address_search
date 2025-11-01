@@ -283,6 +283,10 @@ def process_file(
 
     logger.info("Beginning processing for %d row(s).", len(rows_to_process))
 
+    total_search_calls = 0
+    total_fetch_calls = 0
+    log_interval = max(1, batch_size)
+
     for idx, row in enumerate(rows_to_process, start=1):
         address = row.get(ADDRESS_COLUMN, "").strip()
         company = row.get(COMPANY_COLUMN, "").strip()
@@ -326,9 +330,11 @@ def process_file(
         evidence_docs: List[EvidenceDocument] = []
         query_plan: Optional[QueryPlan] = None
         if research_pipeline:
-            evidence_docs, query_plan = research_pipeline.collect_evidence(
+            evidence_docs, query_plan, search_calls, fetch_calls = research_pipeline.collect_evidence(
                 company=company, address=address
             )
+            total_search_calls += search_calls
+            total_fetch_calls += fetch_calls
 
         original_plan_summary = format_query_plan(query_plan)
         plan_summary = original_plan_summary
@@ -392,9 +398,11 @@ def process_file(
                     max_documents=expanded_docs_limit,
                     planner=query_planner,
                 )
-                new_evidence_docs, new_plan = expanded_pipeline.collect_evidence(
+                new_evidence_docs, new_plan, new_search_calls, new_fetch_calls = expanded_pipeline.collect_evidence(
                     company=company, address=address
                 )
+                total_search_calls += new_search_calls
+                total_fetch_calls += new_fetch_calls
                 if new_evidence_docs:
                     evidence_docs = new_evidence_docs
                     new_plan_summary = format_query_plan(new_plan)
@@ -443,6 +451,15 @@ def process_file(
             merged["category_suggestions"] = ""
         output_rows.append(merged)
         rows_since_flush += 1
+
+        if idx % log_interval == 0:
+            logger.debug(
+                "Processed %d row(s); cumulative Exa usage: %d searches, %d fetches.",
+                idx,
+                total_search_calls,
+                total_fetch_calls,
+            )
+
         if rows_since_flush >= batch_size:
             _persist_progress(
                 output_rows=output_rows,
@@ -466,4 +483,9 @@ def process_file(
             original_headers=original_headers,
         )
 
-    logger.info("Finished writing %s", output_path)
+    logger.info(
+        "Finished writing %s (total Exa usage: %d searches, %d fetches)",
+        output_path,
+        total_search_calls,
+        total_fetch_calls,
+    )

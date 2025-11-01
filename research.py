@@ -202,16 +202,18 @@ class ResearchPipeline:
 
     def collect_evidence(
         self, company: str, address: str
-    ) -> Tuple[List[EvidenceDocument], QueryPlan]:
+    ) -> Tuple[List[EvidenceDocument], QueryPlan, int, int]:
         if not company and not address:
             logger.debug("No company/address supplied for research; skipping.")
             empty_plan = QueryPlan(
                 queries=[], rationale="Missing company and address", used_model=False
             )
-            return [], empty_plan
+            return [], empty_plan, 0, 0
 
         documents: List[EvidenceDocument] = []
         seen_urls: set[str] = set()
+        search_call_count = 0
+        fetch_call_count = 0
 
         base_queries = self.build_queries(company, address)
         if self.planner:
@@ -245,10 +247,14 @@ class ResearchPipeline:
                     executor.submit(self._safe_search, query): query for query in queries
                 }
                 for future in as_completed(future_map):
-                    aggregated_results.extend(future.result())
+                    results, calls = future.result()
+                    aggregated_results.extend(results)
+                    search_call_count += calls
         else:
             for query in queries:
-                aggregated_results.extend(self._safe_search(query))
+                results, calls = self._safe_search(query)
+                aggregated_results.extend(results)
+                search_call_count += calls
 
         fetch_candidates: List[SearchResult] = []
         for result in aggregated_results:
@@ -264,22 +270,26 @@ class ResearchPipeline:
                 company,
                 address,
             )
-            return documents, plan
+            return documents, plan, search_call_count, fetch_call_count
 
         fetch_workers = min(self.max_workers, max(1, self.max_documents * 2))
 
         if fetch_workers > 1:
             with ThreadPoolExecutor(max_workers=fetch_workers) as executor:
-                futures = [executor.submit(self._fetch_document, item) for item in fetch_candidates]
+                futures = [
+                    executor.submit(self._fetch_document, item) for item in fetch_candidates
+                ]
                 for future in as_completed(futures):
                     if len(documents) >= self.max_documents:
                         break
-                    doc = future.result()
+                    doc, calls = future.result()
+                    fetch_call_count += calls
                     if doc:
                         documents.append(doc)
         else:
             for result in fetch_candidates:
-                doc = self._fetch_document(result)
+                doc, calls = self._fetch_document(result)
+                fetch_call_count += calls
                 if doc:
                     documents.append(doc)
                 if len(documents) >= self.max_documents:
@@ -291,32 +301,42 @@ class ResearchPipeline:
             company,
             address,
         )
-        return documents, plan
+        return documents, plan, search_call_count, fetch_call_count
 
-    def _safe_search(self, query: str) -> List[SearchResult]:
+    def _safe_search(self, query: str) -> Tuple[List[SearchResult], int]:
+        if not query:
+            return [], 0
         try:
-            return self.search_client.search(
+            results = self.search_client.search(
                 query=query, max_results=self.max_search_results
             )
+            return results, 1
         except Exception as exc:
             logger.warning("Search request failed for '%s': %s", query, exc)
-            return []
+            return [], 1
 
-    def _fetch_document(self, result: SearchResult) -> Optional[EvidenceDocument]:
+    def _fetch_document(self, result: SearchResult) -> Tuple[Optional[EvidenceDocument], int]:
+        fetch_calls = 0
         try:
+            fetch_calls += 1
             content = self.page_fetcher.fetch(result.url)
         except Exception as exc:
             logger.warning("Failed to fetch %s: %s", result.url, exc)
-            content = self.search_client.fetch_remote_content(result.url)
-            if not content:
-                return None
+            content = None
+            if self.search_client:
+                try:
+                    fetch_calls += 1
+                    content = self.search_client.fetch_remote_content(result.url)
+                except Exception as fallback_exc:
+                    logger.warning("fetch_content fallback failed for %s: %s", result.url, fallback_exc)
+                    content = None
 
         if not content:
-            return None
+            return None, fetch_calls
 
         return EvidenceDocument(
             url=result.url,
             title=result.title,
             snippet=result.snippet,
             content=content,
-        )
+        ), fetch_calls
