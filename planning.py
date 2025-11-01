@@ -130,7 +130,7 @@ class QueryPlanner:
         display_address = address or "Unknown address"
         return (
             "You are a research planner helping classify industrial facilities.\n"
-            "Given a company and address, produce targeted DuckDuckGo search"
+            "Given a company and address, produce targeted Exa web search"
             " queries that will reveal facility type, operations, and any"
             " regulatory information.\n\n"
             f"Company: {display_company}\n"

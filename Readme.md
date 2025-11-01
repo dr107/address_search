@@ -16,7 +16,7 @@ High-Level Flow
 3. `classification.py` either:
    - runs the **tool agent** (LLM can call `web_search`/`fetch_url` via Ollama `/api/chat`) and parses the final JSON, or  
    - falls back to a **single-shot prompt** enriched with any evidence gathered by `research.py`.  
-4. `research.py` houses the DuckDuckGo OpenAPI client (POST to your local MCP server at `http://localhost:8000` by default), the HTML fetcher, and a `ResearchPipeline` that now consumes a `QueryPlan` before collecting `EvidenceDocument`s.  
+4. `research.py` houses the Exa SDK wrapper for search + content retrieval and a `ResearchPipeline` that now consumes a `QueryPlan` before collecting `EvidenceDocument`s.  
 5. `agentic.py` defines the tool loop and abstracts the two tools. It automatically exits—and `classification.py` falls back—if the model/runtime cannot service `/api/chat` (e.g., current `llama3` build on M1).  
 6. `planning.py` (LLM-backed query planner) and `summarizer.py` (evidence-to-bullets summarizer) provide the new intermediate stages so the final classifier sees a compact rationale along with raw excerpts.  
 
@@ -37,10 +37,12 @@ python main.py \
 ```
 
 Key flags:
-- `--enable-web-research` – engages the pre-agent research pipeline (DuckDuckGo API + page fetch) and passes the evidence into the single-shot prompt.  
+- `--enable-web-research` – engages the pre-agent research pipeline (Exa search + content retrieval) and passes the evidence into the single-shot prompt.  
 - `--agentic-mode {auto,on,off}` – controls the tool loop. `auto` checks `--model` against `--agentic-model-hints` (defaults include `llama3`, `llama4`, `deepseek`). If a compatible model is detected and Ollama’s `/api/chat` works, the agent drives its own search/fetch calls. Otherwise the code falls back gracefully and logs a warning.  
-- `--search-api-url` – base URL for your DuckDuckGo MCP server (`http://localhost:8000`).  
-- `--max-search-results`, `--max-documents`, `--fetch-timeout` – tune the research intensity.  
+- `--max-search-results` / `--exa-results`, `--max-documents` – tune the research intensity.  
+- `--fetch-timeout` – retained for compatibility; Exa manages its own request timeouts.  
+- `--random-sample` – when paired with `--limit`, randomly choose which rows to process instead of taking the first N.  
+- `--expanded-search-results`, `--expanded-max-documents` – override the secondary, deeper evidence pass that triggers when a row remains inconclusive.  
 - `--agent-max-iterations` – caps the number of tool-call turns (default 6).  
 - `--limit` – helpful for dry runs.  
 - `--log-level DEBUG` – recommended when testing agent mode to see tool requests/responses and any JSON recovery.
@@ -64,18 +66,18 @@ Current Capabilities & Behavior
 
 * **Input expectations** – CSV must provide `Company Name` and `Full Address`. Missing addresses log a warning and produce empty rows. Optional categories guidance (via `--categories-file`) is stored in the `category_suggestions` column so cache hits remain accurate when you change the hints.  
 * **Ollama integration** – All inference is local. The single-shot path hits `/api/generate`; the agent path uses `/api/chat`. If `/api/chat` returns 400 (current behavior on M1 llama3), the system logs the issue and reruns the request in single-shot mode.  
-* **Evidence handling** – When web research is enabled, the pipeline now: (a) asks the planner for targeted queries, (b) executes DuckDuckGo searches **in parallel** when multiple queries are generated, (c) fetches candidate pages concurrently, (d) summarizes the harvested docs into a short rationale, and (e) feeds both the summary and raw evidence into the classifier/agent prompts.  
+* **Evidence handling** – When web research is enabled, the pipeline now: (a) asks the planner for targeted queries, (b) executes Exa searches **in parallel** when multiple queries are generated, (c) fetches candidate pages concurrently via Exa, (d) summarizes the harvested docs into a short rationale, (e) feeds both the summary and raw evidence into the classifier/agent prompts, and (f) automatically performs a deeper follow-up search if the first pass leaves the classification inconclusive (with configurable expanded limits).  
 * **Row-level cache** – If the destination CSV already exists, its rows are keyed by `(Company Name, Full Address)` and reused automatically so reruns can pick up where they left off. Pass `--ignore-cache` to recompute from scratch.  
 * **JSON robustness** – `_parse_model_response` now attempts to salvage JSON even if the model wraps it with narration (it scans the response for the first `{...}` block). If no valid JSON is found, `notes` explains the failure and the raw output is preserved for debugging.  
 * **Logging** – Rich INFO/DEBUG logs track client initialization, row processing, agent loop iterations, search queries, and JSON parsing issues. Use `--log-level DEBUG` whenever you want to inspect the raw evidence flow.  
-* **Dependencies** – `requests` and `beautifulsoup4` are required (see `requirements.txt`). The `.venv` you created already has them installed.  
+* **Dependencies** – `requests` and `exa-py` are required (see `requirements.txt`). The `.venv` you created already has them installed.  
 
 
 Known Limitations / Future Work
 -------------------------------
 
 1. **Agentic loop compatibility** – The current M1 llama3 build in Ollama does not support `/api/chat`, so the agent is effectively disabled (falls back every time). On your main RTX box with newer Llama4/Deepseek builds, the loop should work; if not, tweak `--agentic-model-hints` or upgrade Ollama.  
-2. **Search quality** – DuckDuckGo via MCP is functional but simplistic. Consider swapping in a richer search API (Brave Search, Bing, SerpAPI) once you’re ready for Stage 2/3 work. The `DuckDuckGoAPIClient` interface makes this a drop-in change.  
+2. **Search quality / rate limits** – Exa yields strong results but enforces throughput caps. Monitor usage and tune `--exa-results`/`--max-documents` if you hit throttling. The `ExaSearchClient` wrapper keeps the integration localized should you need to swap providers later.  
 3. **Evidence aggregation** – Currently we just slice the page text. Future steps include smarter HTML cleaning, source ranking, and capturing explicit citations/URLs in the final CSV.  
 4. **JSON schema enforcement** – We still ask the model for a simple object. Eventually we’ll want a stricter schema (site_type enum, confidence enum, array of sources) plus validation.  
 5. **Scalability** – No batching, retry, or long-run resilience yet (e.g., rate limiting, smarter cache invalidation). Before running all 800 rows, add checkpoints and maybe a resume mechanism. Parallel web fetches improve latency, but there’s still no backoff logic if many sites block requests.  
@@ -85,8 +87,8 @@ Known Limitations / Future Work
 Quick “When You Return” Checklist
 ---------------------------------
 
-1. Pull latest code and confirm your workstation has `requests`, `beautifulsoup4`, and any other dependencies installed.  
-2. Ensure the DuckDuckGo MCP server is running at `http://localhost:8000`.  
+1. Pull latest code and confirm your workstation has `requests`, `exa-py`, and any other dependencies installed.  
+2. Export a valid `EXA_TOKEN` in your shell before running the pipeline.  
 3. Test a small batch with the target high-power model, enabling agent mode (`--agentic-mode on --log-level DEBUG`) to verify tool calls.  
 4. Decide whether to run with the external research pipeline, pure agent mode, or both (agent mode currently bypasses the pipeline to avoid duplicated searches).  
 5. Plan Stage 2 work: better query templates, evidence structuring, and schema validation.  

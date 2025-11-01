@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import logging
-import re
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
-import requests
-from bs4 import BeautifulSoup
+from exa_py import Exa
 
 from planning import QueryPlan, QueryPlanner
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+DEFAULT_SEARCH_TEXT_CHARS = 2_000
+DEFAULT_FETCH_TEXT_CHARS = 12_000
 
 
 @dataclass
@@ -34,170 +31,136 @@ class EvidenceDocument:
     content: str
 
 
-class DuckDuckGoAPIClient:
+def _build_exa_client() -> Exa:
+    token = os.environ.get("EXA_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "EXA_TOKEN environment variable is required to use the Exa SDK."
+        )
+    return Exa(api_key=token)
+
+
+class ExaSearchClient:
     """
-    Client for the local DuckDuckGo MCP server exposed via OpenAPI.
+    Lightweight wrapper around the Exa SDK for search + optional content snippets.
     """
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8000",
-        timeout: int = 15,
-        safe_search: str = "moderate",
+        *,
+        exa: Optional[Exa] = None,
+        search_text_chars: int = DEFAULT_SEARCH_TEXT_CHARS,
     ):
-        self.headers = {"User-Agent": USER_AGENT}
-        self.timeout = timeout
-        self.base_url = base_url.rstrip("/")
-        self.safe_search = safe_search
+        self._exa = exa or _build_exa_client()
+        self._search_text_chars = max(256, search_text_chars)
+
+    @property
+    def exa(self) -> Exa:
+        return self._exa
 
     def search(self, query: str, max_results: int = 5) -> List[SearchResult]:
-        logger.debug(
-            "Searching DuckDuckGo API for query=%s (count=%d)", query, max_results
-        )
-        payload = {
-            "query": query,
-            "max_results": max(1, min(20, max_results)),
-        }
-        resp = requests.post(
-            f"{self.base_url}/search",
-            json=payload,
-            timeout=self.timeout,
-            headers=self.headers,
-        )
-        resp.raise_for_status()
+        if not query:
+            return []
 
-        data = resp.json()
-        items: Optional[List[Any]] = None
-        if isinstance(data, list):
-            items = data
-        elif isinstance(data, dict):
-            if "results" in data and isinstance(data["results"], list):
-                items = data["results"]
-            elif "data" in data and isinstance(data["data"], list):
-                items = data["data"]
+        limit = max(1, min(20, max_results))
+        logger.debug("Searching Exa for query=%s (limit=%d)", query, limit)
 
+        try:
+            response = self._exa.search(
+                query=query,
+                num_results=limit,
+                contents={"text": {"max_characters": self._search_text_chars}},
+                type="neural",
+            )
+        except Exception as exc:
+            logger.warning("Exa search failed for '%s': %s", query, exc)
+            return []
+
+        items = response.results or []
         results: List[SearchResult] = []
-
-        if not items:
-            blob: Optional[str] = None
-            if isinstance(data, str):
-                blob = data
-            elif (
-                isinstance(data, dict)
-                and isinstance(data.get("result"), str)
-            ):
-                blob = data["result"]
-
-            if blob:
-                items = self._parse_structured_text(blob, max_results)
-
-        if not items:
-            logger.debug("DuckDuckGo API returned no parsable results for %s", query)
-            return results
-
         for item in items:
-            if isinstance(item, SearchResult):
-                results.append(item)
-                if len(results) >= max_results:
-                    break
-                continue
-
-            url = str(item.get("url", "")).strip()
-            title = str(item.get("title", "") or item.get("name", "")).strip()
-            snippet = str(
-                item.get("snippet", "")
-                or item.get("description", "")
-                or item.get("excerpt", "")
-            ).strip()
+            url = getattr(item, "url", "") or ""
             if not url:
                 continue
+            title = (getattr(item, "title", None) or "").strip()
+            snippet_source = (
+                getattr(item, "summary", None)
+                or getattr(item, "text", None)
+                or getattr(item, "extras", {})
+            )
+            if isinstance(snippet_source, dict):
+                snippet = str(snippet_source.get("summary") or "").strip()
+            else:
+                snippet = str(snippet_source or "").strip()
+            if not snippet and getattr(item, "text", None):
+                snippet = str(item.text).strip()
+            if snippet:
+                snippet = snippet[:1000]
+
             results.append(SearchResult(url=url, title=title, snippet=snippet))
-            if len(results) >= max_results:
+            if len(results) >= limit:
                 break
 
-        logger.debug(
-            "DuckDuckGo API returned %d result(s) for %s", len(results), query
-        )
+        logger.debug("Exa returned %d result(s) for query=%s", len(results), query)
         return results
 
-    @staticmethod
-    def _parse_structured_text(blob: str, limit: int) -> List[SearchResult]:
-        """Parse numbered text responses from the MCP search server."""
+    def fetch_remote_content(
+        self,
+        url: str,
+        *,
+        max_characters: int = DEFAULT_FETCH_TEXT_CHARS,
+    ) -> Optional[str]:
+        if not url:
+            return None
 
-        results: List[SearchResult] = []
-        current: Optional[dict] = None
+        try:
+            response = self._exa.get_contents(
+                urls=[url],
+                text={"max_characters": max(512, max_characters)},
+            )
+        except Exception as exc:
+            logger.warning("Exa get_contents failed for %s: %s", url, exc)
+            return None
 
-        def flush_current() -> None:
-            if not current:
-                return
-            url = current.get("url", "").strip()
-            title = current.get("title", "").strip()
-            snippet = current.get("snippet", "").strip()
-            if url and title:
-                results.append(
-                    SearchResult(
-                        url=url,
-                        title=title,
-                        snippet=snippet,
-                    )
-                )
-
-        for raw_line in blob.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-
-            match = re.match(r"^(\d+)\.\s+(.*)$", line)
-            if match:
-                if len(results) >= limit:
-                    break
-                flush_current()
-                current = {"title": match.group(2).strip(), "snippet": ""}
-                continue
-
-            if current is None:
-                continue
-
-            if line.lower().startswith("url:"):
-                current["url"] = line.split(":", 1)[1].strip()
-                continue
-
-            if line.lower().startswith("summary:"):
-                current["snippet"] = line.split(":", 1)[1].strip()
-                continue
-
-            # Additional lines extend the snippet for better context.
-            snippet = current.get("snippet", "")
-            current["snippet"] = f"{snippet} {line}".strip()
-
-        if len(results) < limit:
-            flush_current()
-
-        if len(results) > limit:
-            return results[:limit]
-        return results
+        for result in response.results or []:
+            text = getattr(result, "text", None)
+            if text:
+                return str(text)
+        return None
 
 
-class PageFetcher:
+class ExaContentFetcher:
     """
-    Fetch and lightly clean web pages to plain text.
+    Fetches page content via the Exa SDK.
     """
 
-    def __init__(self, timeout: int = 20):
-        self.headers = {"User-Agent": USER_AGENT}
-        self.timeout = timeout
+    def __init__(
+        self,
+        *,
+        exa: Optional[Exa] = None,
+        max_characters: int = DEFAULT_FETCH_TEXT_CHARS,
+    ):
+        self._exa = exa or _build_exa_client()
+        self._max_characters = max(512, max_characters)
 
     def fetch(self, url: str) -> str:
-        logger.debug("Fetching URL: %s", url)
-        resp = requests.get(url, timeout=self.timeout, headers=self.headers)
-        resp.raise_for_status()
+        if not url:
+            raise ValueError("URL is required for Exa content fetch.")
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        # strip script/style
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-        text = " ".join(s for s in soup.stripped_strings)
-        return text
+        try:
+            response = self._exa.get_contents(
+                urls=[url],
+                text={"max_characters": self._max_characters},
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Exa get_contents failed for {url}: {exc}") from exc
+
+        for result in response.results or []:
+            text = getattr(result, "text", None)
+            if text:
+                return str(text)
+
+        raise RuntimeError(f"Exa returned no content for {url}")
 
 
 class ResearchPipeline:
@@ -207,8 +170,8 @@ class ResearchPipeline:
 
     def __init__(
         self,
-        search_client: DuckDuckGoAPIClient,
-        page_fetcher: PageFetcher,
+        search_client: ExaSearchClient,
+        page_fetcher: ExaContentFetcher,
         max_search_results: int = 5,
         max_documents: int = 3,
         planner: Optional[QueryPlanner] = None,
@@ -218,7 +181,7 @@ class ResearchPipeline:
         self.max_search_results = max(1, max_search_results)
         self.max_documents = max(1, max_documents)
         self.planner = planner
-        self.max_workers = max(1, max_documents * 2)
+        self.max_workers = max(1, self.max_documents * 2)
 
     def build_queries(self, company: str, address: str) -> List[str]:
         parts = [f'"{company}" "{address}"'.strip()]
@@ -229,7 +192,6 @@ class ResearchPipeline:
         elif address:
             parts.append(f'"{address}" facility')
 
-        # remove duplicates and empties
         deduped: List[str] = []
         for q in parts:
             q = q.strip()
@@ -336,15 +298,20 @@ class ResearchPipeline:
             return self.search_client.search(
                 query=query, max_results=self.max_search_results
             )
-        except requests.RequestException as exc:
+        except Exception as exc:
             logger.warning("Search request failed for '%s': %s", query, exc)
             return []
 
     def _fetch_document(self, result: SearchResult) -> Optional[EvidenceDocument]:
         try:
             content = self.page_fetcher.fetch(result.url)
-        except requests.RequestException as exc:
+        except Exception as exc:
             logger.warning("Failed to fetch %s: %s", result.url, exc)
+            content = self.search_client.fetch_remote_content(result.url)
+            if not content:
+                return None
+
+        if not content:
             return None
 
         return EvidenceDocument(

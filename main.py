@@ -40,6 +40,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         help="Optional max number of rows to process (useful for dry runs).",
     )
     parser.add_argument(
+        "--random-sample",
+        action="store_true",
+        help="When used with --limit, process a random subset instead of the first N rows.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Default: INFO",
@@ -47,13 +52,15 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument(
         "--enable-web-research",
         action="store_true",
-        help="If set, run DuckDuckGo search + fetch to gather evidence.",
+        help="If set, run Exa search + content retrieval to gather evidence.",
     )
     parser.add_argument(
         "--max-search-results",
+        "--exa-results",
         type=int,
         default=5,
-        help="Number of search results to inspect per query (default: 5).",
+        dest="max_search_results",
+        help="Number of Exa search results to fetch per query (default: 5).",
     )
     parser.add_argument(
         "--max-documents",
@@ -65,12 +72,23 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         "--fetch-timeout",
         type=int,
         default=20,
-        help="Timeout in seconds for search/fetch HTTP requests (default: 20).",
+        help="Timeout placeholder (retained for compatibility; Exa manages timeouts internally).",
     )
     parser.add_argument(
-        "--search-api-url",
-        default="http://localhost:8000",
-        help="Base URL for the local DuckDuckGo OpenAPI server (default: http://localhost:8000).",
+        "--expanded-search-results",
+        type=int,
+        default=None,
+        help=(
+            "Optional override for the number of Exa search results to use when retrying an inconclusive row."
+        ),
+    )
+    parser.add_argument(
+        "--expanded-max-documents",
+        type=int,
+        default=None,
+        help=(
+            "Optional override for the maximum documents to fetch during an expanded evidence retry."
+        ),
     )
     parser.add_argument(
         "--agentic-mode",
@@ -192,13 +210,15 @@ def main(argv: List[str]) -> None:
         max_search_results=args.max_search_results,
         max_documents=args.max_documents,
         fetch_timeout=args.fetch_timeout,
-        search_api_url=args.search_api_url,
         agentic_mode=args.agentic_mode,
         agentic_model_hints=agentic_model_hints,
         agent_max_iterations=args.agent_max_iterations,
         ignore_cache=args.ignore_cache,
         category_suggestions=categories if categories else None,
         batch_size=args.batch_size,
+        random_sample=args.random_sample,
+        expanded_search_results=args.expanded_search_results,
+        expanded_max_documents=args.expanded_max_documents,
     )
 
     print(f"Done. Wrote {output_path}")

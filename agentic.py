@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from requests import RequestException
 
 from ollama import OllamaClient
-from research import DuckDuckGoAPIClient, PageFetcher
+from research import ExaContentFetcher, ExaSearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgenticConfig:
     enabled: bool
-    search_client: Optional[DuckDuckGoAPIClient] = None
-    page_fetcher: Optional[PageFetcher] = None
+    search_client: Optional[ExaSearchClient] = None
+    page_fetcher: Optional[ExaContentFetcher] = None
     max_iterations: int = 6
 
 
@@ -29,8 +29,8 @@ class ToolAgent:
         self,
         client: OllamaClient,
         model_name: str,
-        search_client: DuckDuckGoAPIClient,
-        page_fetcher: PageFetcher,
+        search_client: ExaSearchClient,
+        page_fetcher: ExaContentFetcher,
         max_iterations: int = 6,
     ):
         self.client = client
@@ -155,7 +155,7 @@ class ToolAgent:
                 "type": "function",
                 "function": {
                     "name": "web_search",
-                    "description": "Search DuckDuckGo for information about the facility.",
+                    "description": "Search Exa for information about the facility.",
                     "parameters": {
                         "type": "object",
                         "properties": {

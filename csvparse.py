@@ -1,5 +1,6 @@
 import csv
 import logging
+import random
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -13,7 +14,7 @@ from constants import (
 )
 from ollama import OllamaClient
 from planning import QueryPlan, QueryPlanner
-from research import DuckDuckGoAPIClient, PageFetcher, ResearchPipeline
+from research import EvidenceDocument, ExaContentFetcher, ExaSearchClient, ResearchPipeline
 from summarizer import EvidenceSummarizer
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,16 @@ def _should_use_agentic_loop(
     return False
 
 
+def _needs_expanded_search(result: Dict[str, Any]) -> bool:
+    site_type = str(result.get("site_type", "") or "").strip().lower()
+    if not site_type or site_type == "unknown":
+        return True
+    notes = str(result.get("notes", "") or "").strip().lower()
+    if any(phrase in notes for phrase in ["insufficient", "not enough", "unable to determine", "no evidence"]):
+        return True
+    return False
+
+
 def process_file(
     input_path: Path,
     output_path: Path,
@@ -148,13 +159,15 @@ def process_file(
     max_search_results: int = 5,
     max_documents: int = 3,
     fetch_timeout: int = 20,
-    search_api_url: str = "http://localhost:8000",
     agentic_mode: str = "auto",
     agentic_model_hints: Optional[List[str]] = None,
     agent_max_iterations: int = 6,
     ignore_cache: bool = False,
     category_suggestions: Optional[List[Dict[str, str]]] = None,
     batch_size: int = 5,
+    random_sample: bool = False,
+    expanded_search_results: Optional[int] = None,
+    expanded_max_documents: Optional[int] = None,
 ) -> None:
     """
     - Read input CSV
@@ -191,18 +204,15 @@ def process_file(
     else:
         logger.info("Agentic mode explicitly set to %s.", agentic_mode.upper())
 
-    search_client: Optional[DuckDuckGoAPIClient] = None
-    fetcher: Optional[PageFetcher] = None
+    search_client: Optional[ExaSearchClient] = None
+    fetcher: Optional[ExaContentFetcher] = None
     research_pipeline: Optional[ResearchPipeline] = None
 
     needs_search_stack = enable_web_research or use_agentic_tools
     if needs_search_stack:
-        logger.info("Initializing search stack via %s", search_api_url)
-        search_client = DuckDuckGoAPIClient(
-            base_url=search_api_url,
-            timeout=fetch_timeout,
-        )
-        fetcher = PageFetcher(timeout=fetch_timeout)
+        logger.info("Initializing Exa search stack.")
+        search_client = ExaSearchClient()
+        fetcher = ExaContentFetcher(exa=search_client.exa)
 
     if enable_web_research and search_client and fetcher:
         if use_agentic_tools:
@@ -254,8 +264,20 @@ def process_file(
         if limit < 0:
             logger.warning("Limit %d is negative; treating as 0.", limit)
             limit = 0
-        logger.info("Processing at most %d rows.", limit)
-        rows_to_process = input_rows[:limit]
+        effective_limit = min(limit, len(input_rows))
+        if random_sample and effective_limit > 0:
+            logger.info(
+                "Processing %d randomly sampled row(s) out of %d.",
+                effective_limit,
+                len(input_rows),
+            )
+            rows_to_process = random.sample(input_rows, k=effective_limit)
+        else:
+            logger.info(
+                "Processing the first %d row(s).",
+                effective_limit,
+            )
+            rows_to_process = input_rows[:effective_limit]
     else:
         rows_to_process = input_rows
 
@@ -301,17 +323,18 @@ def process_file(
                 address,
             )
 
-        evidence_docs = []
+        evidence_docs: List[EvidenceDocument] = []
         query_plan: Optional[QueryPlan] = None
         if research_pipeline:
             evidence_docs, query_plan = research_pipeline.collect_evidence(
                 company=company, address=address
             )
 
-        plan_summary = format_query_plan(query_plan)
+        original_plan_summary = format_query_plan(query_plan)
+        plan_summary = original_plan_summary
 
         evidence_summary_text = ""
-        if evidence_summarizer:
+        if evidence_summarizer and evidence_docs:
             summary = evidence_summarizer.summarize(
                 company=company,
                 address=address,
@@ -336,6 +359,78 @@ def process_file(
             agent_config=agent_config,
             evidence_summary=evidence_summary_text,
         )
+
+        can_expand = (
+            _needs_expanded_search(model_result)
+            and search_client is not None
+            and fetcher is not None
+        )
+
+        if can_expand:
+            expanded_results = expanded_search_results if expanded_search_results is not None else max_search_results * 2
+            expanded_results = max(expanded_results, max_search_results)
+            expanded_docs_limit = expanded_max_documents if expanded_max_documents is not None else max_documents * 2
+            expanded_docs_limit = max(expanded_docs_limit, max_documents)
+
+            should_expand = (
+                expanded_results > (research_pipeline.max_search_results if research_pipeline else max_search_results)
+                or expanded_docs_limit > (research_pipeline.max_documents if research_pipeline else max_documents)
+                or not evidence_docs
+            )
+
+            if should_expand:
+                logger.info(
+                    "Row %d: classification inconclusive; expanding search (max_search_results=%d, max_documents=%d).",
+                    idx,
+                    expanded_results,
+                    expanded_docs_limit,
+                )
+                expanded_pipeline = ResearchPipeline(
+                    search_client=search_client,
+                    page_fetcher=fetcher,
+                    max_search_results=expanded_results,
+                    max_documents=expanded_docs_limit,
+                    planner=query_planner,
+                )
+                new_evidence_docs, new_plan = expanded_pipeline.collect_evidence(
+                    company=company, address=address
+                )
+                if new_evidence_docs:
+                    evidence_docs = new_evidence_docs
+                    new_plan_summary = format_query_plan(new_plan)
+                    if plan_summary and new_plan_summary and new_plan_summary != plan_summary:
+                        plan_summary = f"{plan_summary} || Expanded: {new_plan_summary}"
+                    elif new_plan_summary:
+                        plan_summary = f"Expanded: {new_plan_summary}"
+
+                    if evidence_summarizer:
+                        summary = evidence_summarizer.summarize(
+                            company=company,
+                            address=address,
+                            evidence=evidence_docs,
+                        )
+                        evidence_summary_text = summary.text
+
+                    model_result = run_model_on_address(
+                        address=address,
+                        company_name=company,
+                        client=client,
+                        model_name=model_name,
+                        evidence=evidence_docs,
+                        category_suggestions=category_hint_list if category_hint_list else None,
+                        agent_config=agent_config,
+                        evidence_summary=evidence_summary_text,
+                    )
+                else:
+                    logger.info(
+                        "Row %d: expanded search produced no additional evidence.",
+                        idx,
+                    )
+            else:
+                logger.debug(
+                    "Row %d: expanded search thresholds not higher than base; skipping expansion.",
+                    idx,
+                )
 
         merged = {**row, **model_result}
         if plan_summary:
