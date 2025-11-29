@@ -3,7 +3,7 @@ Project Status (November 2025)
 
 This project began as a request from a friend. He's a chemical engineer and is looking to relocate to another state. To find potential employers, he reached out to a regulatory agency in NJ and asked for a list of chemical plants. They gave him a list of ~800 names and addresses. However, not all of these businesses are chemical plants, some are just administrative offices, etc, and some aren't even open anymore. 
 
-My friend asked my help getting ChatGPT to do this task for him, but it was pretty obvious that ChatGPT isn't going to do 800 rows of agentic research for you, not even on the paid plan. So I used the Cursor IDE and OpenAI Codex to throw this together. The current state (Nov '25) represents maybe ~4h of active effort. 
+My friend asked my help getting ChatGPT to help him categorize these addresses, but it was pretty clear to me that ChatGPT isn't going to do 800 rows of agentic research for you, not even on the paid plan. So I used the Cursor IDE and OpenAI Codex to throw this together. The current state (Nov '25) represents maybe ~4h of active effort. 
 
 Here's roughly what the app does
 - It uses python's `csv` library to read the input CSV.
