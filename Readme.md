@@ -15,7 +15,8 @@ Next Steps
 - Refactor code to be more in line with my stylistic choices
 - Attempt to tune accuracy/price ratio by playing with the amount of results processed, and perhaps using the LLM to "judge" results as useful or not before including them in the final context window for summarization.
 - Generify. Remove all direct references to chemicals and such, and make this run as a generic business address classifier.
-- Make it run faster and with fewer dependencies by replacing Ollama with VLLM or another lower-level framework, perhaps enabling more efficient usage of the model  
+- Make it run faster and with fewer dependencies by replacing Ollama with VLLM or another lower-level framework, perhaps enabling more efficient usage of the model
+- Fully containerize the setup so that it can be installed in one command.
 
 Tech stack
 ---------------
