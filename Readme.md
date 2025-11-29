@@ -1,8 +1,28 @@
-Project Status (October 2025)
+Project Status (November 2025)
 --------------------------------
 
-You are building an address-enrichment pipeline that labels ~800 business locations with site type, confidence, and supporting evidence. The system now has a robust CLI scaffold, optional web-research plumbing, and a conditional agentic loop for tool-capable LLMs. This document captures the current state so you can quickly resume development on your main workstation.
+This project began as a request from a friend. He's a chemical engineer and is looking to relocate to another state. To find potential employers, he reached out to a regulatory agency in NJ and asked for a list of chemical plants. They gave him a list of ~800 names and addresses. However, not all of these businesses are chemical plants, some are just administrative offices, etc, and some aren't even open anymore. 
 
+My friend asked my help getting ChatGPT to do this task for him, but it was pretty obvious that ChatGPT isn't going to do 800 rows of agentic research for you, not even on the paid plan. So I used the Cursor IDE and OpenAI Codex to throw this together. The current state (Nov '25) represents maybe ~4h of active effort. 
+
+Here's roughly what the app does
+- It uses python's `csv` library to read the input CSV.
+- For each row, it takes the name and address and does a couple different web searches to see what comes up
+- It fetches a number of pages in those results, and sends them to a local LLM to summarize, and attempt to categorize the plant into one of a few categories (which the caller can provide as input)
+
+Next Steps
+--------------
+- Refactor code to be more in line with my stylistic choices
+- Attempt to tune accuracy/price ratio by playing with the amount of results processed, and perhaps using the LLM to "judge" results as useful or not before including them in the final context window for summarization.
+- Generify. Remove all direct references to chemicals and such, and make this run as a generic business address classifier.
+- Make it run faster and with fewer dependencies by replacing Ollama with VLLM or another lower-level framework, perhaps enabling more efficient usage of the model  
+
+Tech stack
+---------------
+The tech stack involves
+- Ollama API to provide a uniform interface for local LLM inference
+- EXA search for search and page fetch features (I tried duckduckgo for search and was rate limited, and getting sites to respond to my page fetches without 40X was too frustrating)
+- Python to glue it all together.
 
 High-Level Flow
 ---------------
