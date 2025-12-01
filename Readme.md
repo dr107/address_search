@@ -7,7 +7,7 @@ My friend asked my help getting ChatGPT to help him categorize these addresses, 
 
 Here's roughly what the app does
 - It uses python's `csv` library to read the input CSV.
-- For each row, it takes the name and address and does a couple different web searches to see what comes up
+- For each row, it takes the name and address and does a couple different web searches (using EXA.ai for web search) to see what comes up (and using EXA again to fetch page content)
 - It fetches a number of pages in those results, and sends them to a local LLM to summarize, and attempt to categorize the plant into one of a few categories (which the caller can provide as input)
 
 Next Steps
